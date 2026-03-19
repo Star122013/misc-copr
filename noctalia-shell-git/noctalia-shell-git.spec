@@ -1,3 +1,5 @@
+%global debug_package %{nil}
+
 Name:           noctalia-shell-git
 Version:        git
 Release:        %autorelease
@@ -6,6 +8,7 @@ Summary:        A Quickshell-based custom shell setup
 License:        MIT
 URL:            https://github.com/noctalia-dev/noctalia-shell
 Source0:        %{url}/archive/refs/heads/main.tar.gz
+BuildArch:      noarch
 
 BuildRequires:  rpm-build
 BuildRequires:  git
