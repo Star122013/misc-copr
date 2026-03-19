@@ -103,7 +103,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      GH_VARIABLES_TOKEN: ${{ secrets.GH_VARIABLES_TOKEN }}
       PACKAGE_ID: ${{ matrix.pkg.id }}
       UPSTREAM_REPO: ${{ matrix.pkg.upstream_repo }}
       UPSTREAM_BRANCH: ${{ matrix.pkg.upstream_branch }}
@@ -154,22 +153,23 @@ jobs:
           echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
           echo "Upstream ${UPSTREAM_REPO}@${UPSTREAM_BRANCH}: ${sha}"
 
+      - name: Restore previous commit marker cache
+        id: state_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .state
+          key: upstream-state-${{ steps.varname.outputs.var_name }}-${{ steps.upstream.outputs.sha }}
+          restore-keys: |
+            upstream-state-${{ steps.varname.outputs.var_name }}-
+
       - name: Load previous commit marker
         id: state
         shell: bash
         run: |
           set -euo pipefail
-          var_name="${{ steps.varname.outputs.var_name }}"
-          api_token="${GH_VARIABLES_TOKEN:-${GH_TOKEN}}"
-          if last_sha="$(GH_TOKEN="${api_token}" gh api "repos/${GITHUB_REPOSITORY}/actions/variables/${var_name}" --jq '.value' 2>/dev/null)"; then
-            :
+          if [[ -f .state/last_sha ]]; then
+            last_sha="$(cat .state/last_sha)"
           else
-            err="$(GH_TOKEN="${api_token}" gh api "repos/${GITHUB_REPOSITORY}/actions/variables/${var_name}" 2>&1 || true)"
-            if grep -q "Resource not accessible by integration" <<<"${err}"; then
-              echo "Cannot read repository Actions variables with current token." >&2
-              echo "Set repository secret GH_VARIABLES_TOKEN (PAT with Variables read/write)." >&2
-              exit 1
-            fi
             last_sha=""
           fi
           echo "last_sha=${last_sha}" >> "${GITHUB_OUTPUT}"
@@ -226,21 +226,18 @@ jobs:
           echo "Triggering COPR build for [${PACKAGE_ID}] ${COPR_PROJECT}/${COPR_PACKAGE}"
           copr-cli build-package --nowait "${COPR_PROJECT}" --name "${COPR_PACKAGE}"
 
-      - name: Save upstream commit marker
+      - name: Write upstream commit marker
         if: steps.compare.outputs.changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          new_sha="${{ steps.upstream.outputs.sha }}"
-          var_name="${{ steps.varname.outputs.var_name }}"
-          api_token="${GH_VARIABLES_TOKEN:-${GH_TOKEN}}"
-          if GH_TOKEN="${api_token}" gh api "repos/${GITHUB_REPOSITORY}/actions/variables/${var_name}" >/dev/null 2>&1; then
-            GH_TOKEN="${api_token}" gh api --method PATCH "repos/${GITHUB_REPOSITORY}/actions/variables/${var_name}" \
-              -f name="${var_name}" \
-              -f value="${new_sha}" >/dev/null
-          else
-            GH_TOKEN="${api_token}" gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/variables" \
-              -f name="${var_name}" \
-              -f value="${new_sha}" >/dev/null
-          fi
-          echo "[${PACKAGE_ID}] Updated ${var_name}=${new_sha}"
+          mkdir -p .state
+          echo "${{ steps.upstream.outputs.sha }}" > .state/last_sha
+          echo "[${PACKAGE_ID}] Staged cache marker for ${{ steps.upstream.outputs.sha }}"
+
+      - name: Save commit marker cache
+        if: steps.compare.outputs.changed == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .state
+          key: upstream-state-${{ steps.varname.outputs.var_name }}-${{ steps.upstream.outputs.sha }}

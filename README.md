@@ -48,16 +48,11 @@ variables:
 - `COPR_LOGIN`
 - `COPR_USERNAME`
 - `COPR_TOKEN`
-- `GH_VARIABLES_TOKEN` (PAT used to read/write Actions Variables state)
-
-`GH_VARIABLES_TOKEN` should be a fine-grained token scoped to this repository
-with `Variables: Read and write` permission. A classic PAT with `repo` scope
-also works.
 
 ### State tracking
 
-The workflow stores last processed commits in repository Actions variables:
+The workflow stores last processed commits in GitHub Actions cache entries:
 
-- `LAST_UPSTREAM_SHA_<ID>`
+- `upstream-state-LAST_UPSTREAM_SHA_<ID>-<sha>`
 
 `<ID>` is your package `id` uppercased and sanitized to `A-Z0-9_`.
