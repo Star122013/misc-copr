@@ -1,0 +1,237 @@
+name: Rebuild COPR On Upstream Updates
+
+on:
+  schedule:
+    - cron: "0 */12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: copr-upstream-rebuild
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    env:
+      DEFAULT_UPSTREAM_REPO: ${{ vars.UPSTREAM_REPO }}
+      DEFAULT_UPSTREAM_BRANCH: ${{ vars.UPSTREAM_BRANCH }}
+      DEFAULT_COPR_PROJECT: ${{ vars.COPR_PROJECT }}
+      DEFAULT_COPR_PACKAGE: ${{ vars.COPR_PACKAGE }}
+      DEFAULT_COPR_URL: ${{ vars.COPR_URL }}
+    outputs:
+      packages: ${{ steps.packages.outputs.packages }}
+      count: ${{ steps.packages.outputs.count }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Discover package configuration
+        id: packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          config_path=".github/copr-packages.json"
+          if [[ -f "${config_path}" ]]; then
+            if ! jq -e '.packages and (.packages | type == "array")' "${config_path}" >/dev/null; then
+              echo "Invalid ${config_path}: expected {\"packages\": [...]}" >&2
+              exit 1
+            fi
+            raw_packages="$(jq -c '.packages' "${config_path}")"
+          else
+            raw_packages="$(jq -cn \
+              --arg upstream_repo "${DEFAULT_UPSTREAM_REPO:-}" \
+              --arg upstream_branch "${DEFAULT_UPSTREAM_BRANCH:-main}" \
+              --arg copr_project "${DEFAULT_COPR_PROJECT:-}" \
+              --arg copr_package "${DEFAULT_COPR_PACKAGE:-}" \
+              --arg copr_url "${DEFAULT_COPR_URL:-}" \
+              '[
+                {
+                  id: (if $copr_package == "" then "default" else $copr_package end),
+                  upstream_repo: $upstream_repo,
+                  upstream_branch: (if $upstream_branch == "" then "main" else $upstream_branch end),
+                  copr_project: $copr_project,
+                  copr_package: $copr_package,
+                  copr_url: $copr_url
+                }
+              ]'
+            )"
+          fi
+
+          normalized="$(jq -c '
+            map(
+              .upstream_branch = (
+                if (.upstream_branch // "") == "" then "main" else .upstream_branch end
+              )
+            )
+          ' <<<"${raw_packages}")"
+
+          if ! jq -e 'type == "array" and length > 0' <<<"${normalized}" >/dev/null; then
+            echo "No packages configured." >&2
+            exit 1
+          fi
+
+          if ! jq -e '
+            all(.[];
+              (.id | type == "string" and length > 0) and
+              (.upstream_repo | type == "string" and length > 0) and
+              (.upstream_branch | type == "string" and length > 0) and
+              (.copr_project | type == "string" and length > 0) and
+              (.copr_package | type == "string" and length > 0)
+            )
+          ' <<<"${normalized}" >/dev/null; then
+            echo "Each package requires: id, upstream_repo, upstream_branch, copr_project, copr_package." >&2
+            exit 1
+          fi
+
+          count="$(jq 'length' <<<"${normalized}")"
+          echo "count=${count}" >> "${GITHUB_OUTPUT}"
+          echo "packages=${normalized}" >> "${GITHUB_OUTPUT}"
+          echo "Discovered ${count} package(s)."
+
+  check-and-build:
+    needs: discover
+    if: needs.discover.outputs.count != '0'
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg: ${{ fromJson(needs.discover.outputs.packages) }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PACKAGE_ID: ${{ matrix.pkg.id }}
+      UPSTREAM_REPO: ${{ matrix.pkg.upstream_repo }}
+      UPSTREAM_BRANCH: ${{ matrix.pkg.upstream_branch }}
+      COPR_PROJECT: ${{ matrix.pkg.copr_project }}
+      COPR_PACKAGE: ${{ matrix.pkg.copr_package }}
+      PACKAGE_COPR_URL: ${{ matrix.pkg.copr_url }}
+      DEFAULT_COPR_URL: ${{ vars.COPR_URL }}
+      COPR_LOGIN: ${{ secrets.COPR_LOGIN }}
+      COPR_USERNAME: ${{ secrets.COPR_USERNAME }}
+      COPR_TOKEN: ${{ secrets.COPR_TOKEN }}
+    steps:
+      - name: Validate package settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in PACKAGE_ID UPSTREAM_REPO UPSTREAM_BRANCH COPR_PROJECT COPR_PACKAGE COPR_LOGIN COPR_USERNAME COPR_TOKEN; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing required setting for this package: ${name}" >&2
+              missing=1
+            fi
+          done
+          if [[ "${missing}" -ne 0 ]]; then
+            exit 1
+          fi
+
+      - name: Build per-package variable name
+        id: varname
+        shell: bash
+        run: |
+          set -euo pipefail
+          safe_id="$(echo "${PACKAGE_ID}" | tr '[:lower:]' '[:upper:]' | sed -E 's/[^A-Z0-9]+/_/g; s/^_+//; s/_+$//')"
+          if [[ -z "${safe_id}" ]]; then
+            echo "PACKAGE_ID=${PACKAGE_ID} cannot be converted to a valid variable suffix." >&2
+            exit 1
+          fi
+          var_name="LAST_UPSTREAM_SHA_${safe_id}"
+          echo "var_name=${var_name}" >> "${GITHUB_OUTPUT}"
+          echo "Tracking variable: ${var_name}"
+
+      - name: Resolve upstream commit
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(gh api "repos/${UPSTREAM_REPO}/commits/${UPSTREAM_BRANCH}" --jq '.sha')"
+          echo "branch=${UPSTREAM_BRANCH}" >> "${GITHUB_OUTPUT}"
+          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
+          echo "Upstream ${UPSTREAM_REPO}@${UPSTREAM_BRANCH}: ${sha}"
+
+      - name: Load previous commit marker
+        id: state
+        shell: bash
+        run: |
+          set -euo pipefail
+          var_name="${{ steps.varname.outputs.var_name }}"
+          if last_sha="$(gh api "repos/${GITHUB_REPOSITORY}/actions/variables/${var_name}" --jq '.value' 2>/dev/null)"; then
+            :
+          else
+            last_sha=""
+          fi
+          echo "last_sha=${last_sha}" >> "${GITHUB_OUTPUT}"
+          if [[ -n "${last_sha}" ]]; then
+            echo "Previous upstream marker: ${last_sha}"
+          else
+            echo "No previous upstream marker found."
+          fi
+
+      - name: Compare upstream commit
+        id: compare
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="${{ steps.upstream.outputs.sha }}"
+          previous="${{ steps.state.outputs.last_sha }}"
+          if [[ "${current}" == "${previous}" ]]; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+            echo "[${PACKAGE_ID}] No upstream changes. Skip COPR build."
+          else
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+            echo "[${PACKAGE_ID}] Upstream changed (${previous} -> ${current}). Triggering COPR build."
+          fi
+
+      - name: Install copr-cli
+        if: steps.compare.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --user --upgrade copr-cli
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Configure copr-cli
+        if: steps.compare.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          copr_url="${PACKAGE_COPR_URL:-${DEFAULT_COPR_URL:-https://copr.fedorainfracloud.org}}"
+          mkdir -p "${HOME}/.config"
+          cat > "${HOME}/.config/copr" <<EOF
+          [copr-cli]
+          login = ${COPR_LOGIN}
+          username = ${COPR_USERNAME}
+          token = ${COPR_TOKEN}
+          copr_url = ${copr_url}
+          EOF
+          chmod 600 "${HOME}/.config/copr"
+
+      - name: Trigger COPR package build
+        if: steps.compare.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Triggering COPR build for [${PACKAGE_ID}] ${COPR_PROJECT}/${COPR_PACKAGE}"
+          copr-cli build-package --nowait "${COPR_PROJECT}" --name "${COPR_PACKAGE}"
+
+      - name: Save upstream commit marker
+        if: steps.compare.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          new_sha="${{ steps.upstream.outputs.sha }}"
+          var_name="${{ steps.varname.outputs.var_name }}"
+          if gh api "repos/${GITHUB_REPOSITORY}/actions/variables/${var_name}" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/actions/variables/${var_name}" \
+              -f name="${var_name}" \
+              -f value="${new_sha}" >/dev/null
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/variables" \
+              -f name="${var_name}" \
+              -f value="${new_sha}" >/dev/null
+          fi
+          echo "[${PACKAGE_ID}] Updated ${var_name}=${new_sha}"

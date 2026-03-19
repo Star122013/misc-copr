@@ -1,0 +1,12 @@
+{
+  "packages": [
+    {
+      "id": "noctalia-shell-git",
+      "upstream_repo": "noctalia-dev/noctalia-shell",
+      "upstream_branch": "main",
+      "copr_project": "yourname/yourproject",
+      "copr_package": "noctalia-shell-git",
+      "copr_url": "https://copr.fedorainfracloud.org"
+    }
+  ]
+}

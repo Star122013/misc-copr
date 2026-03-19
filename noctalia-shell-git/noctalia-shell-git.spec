@@ -1,0 +1,51 @@
+Name:           noctalia-shell-git
+Version:        git
+Release:        %autorelease
+Summary:        A Quickshell-based custom shell setup
+
+License:        MIT
+URL:            https://github.com/noctalia-dev/noctalia-shell
+Source0:        %{url}/archive/refs/heads/main.tar.gz
+
+BuildRequires:  rpm-build
+BuildRequires:  git
+BuildRequires:  tar
+
+Requires:       noctalia-qs
+Requires:       google-roboto-fonts
+Requires:       rsms-inter-fonts
+Requires:       brightnessctl
+Requires:       gpu-screen-recorder
+Requires:	   	ddcutil
+Requires:       ImageMagick
+
+
+# Optional dependencies
+Recommends:     cliphist
+Recommends:     matugen
+Recommends:     wlsunset
+Recommends:     python3
+Recommends:     evolution-data-server
+Recommends:     polkit-kde
+Recommends:     qt6-qtmultimedia
+
+%description
+A beautiful, minimal desktop shell for Wayland that actually gets out of your way. Built on Quickshell with a warm lavender aesthetic that you can easily customize to match your vibe.
+
+%prep
+%autosetup
+
+%build
+# No build step; pure config package
+
+%install
+mkdir -p %{buildroot}%{_sysconfdir}/xdg/quickshell/noctalia-shell
+cp -rp * %{buildroot}%{_sysconfdir}/xdg/quickshell/noctalia-shell/
+
+%files
+%license LICENSE
+%doc README.md
+%{_sysconfdir}/xdg/quickshell/noctalia-shell/
+
+%changelog
+%autochangelog
