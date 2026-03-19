@@ -48,6 +48,11 @@ variables:
 - `COPR_LOGIN`
 - `COPR_USERNAME`
 - `COPR_TOKEN`
+- `GH_VARIABLES_TOKEN` (PAT used to read/write Actions Variables state)
+
+`GH_VARIABLES_TOKEN` should be a fine-grained token scoped to this repository
+with `Variables: Read and write` permission. A classic PAT with `repo` scope
+also works.
 
 ### State tracking
 
