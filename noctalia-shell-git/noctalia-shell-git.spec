@@ -33,7 +33,8 @@ Recommends:     qt6-qtmultimedia
 A beautiful, minimal desktop shell for Wayland that actually gets out of your way. Built on Quickshell with a warm lavender aesthetic that you can easily customize to match your vibe.
 
 %prep
-%autosetup -n noctalia-shell-main
+%autosetup -c -T -n source-tree
+tar -xf %{SOURCE0} --strip-components=1
 
 %build
 # No build step; pure config package
